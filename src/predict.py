@@ -33,16 +33,36 @@ def load_artifacts():
     print("[predict] Loading models and artifacts...")
     artifacts = {}
     
+    def safe_load(path):
+        try:
+            return joblib.load(path)
+        except Exception as e:
+            import importlib.metadata
+            def get_ver(pkg):
+                try: return importlib.metadata.version(pkg)
+                except: return "Not installed"
+            
+            np_v = get_ver('numpy')
+            sp_v = get_ver('scipy')
+            sk_v = get_ver('scikit-learn')
+            xgb_v = get_ver('xgboost')
+            
+            msg = f"Failed to load artifact: {os.path.basename(path)}\n"
+            msg += f"Exception: {str(e)}\n"
+            msg += f"Installed versions: numpy={np_v}, scipy={sp_v}, scikit-learn={sk_v}, xgboost={xgb_v}\n"
+            msg += "This usually means the pickled artifacts were created with different library versions than are installed. Either align requirements.txt to the environment that produced the artifacts, or regenerate the artifacts in this environment."
+            raise RuntimeError(msg) from e
+
     # Model A (SIF Classification)
     model_a_path = os.path.join(MODELS_DIR, "model_a_sif_classifier.joblib")
     prep_a_path = os.path.join(MODELS_DIR, "model_a_preprocessor.joblib")
-    artifacts['model_a'] = joblib.load(model_a_path)
-    artifacts['prep_a'] = joblib.load(prep_a_path)
+    artifacts['model_a'] = safe_load(model_a_path)
+    artifacts['prep_a'] = safe_load(prep_a_path)
     
     # Model B (IOGP Rule Classification)
     model_b_path = os.path.join(MODELS_DIR, "model_b_iogp_classifier.joblib")
     classes_b_path = os.path.join(MODELS_DIR, "model_b_classes.pkl")
-    artifacts['model_b'] = joblib.load(model_b_path)
+    artifacts['model_b'] = safe_load(model_b_path)
     with open(classes_b_path, 'rb') as f:
         artifacts['classes_b'] = pickle.load(f)
         
