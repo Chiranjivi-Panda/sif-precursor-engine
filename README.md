@@ -59,6 +59,7 @@ python src/run_embed.py
 # Train models
 python src/train_model_a.py
 python src/train_model_b.py
+python src/precompute_scores.py  # Note: Must be re-run whenever either model is retrained
 
 # Test inference
 python src/test_predict.py
@@ -80,6 +81,7 @@ sif-precursor-engine/
 │   ├── embed.py              # DistilBERT CLS token extraction
 │   ├── train_model_a.py      # SIF binary classifier training
 │   ├── train_model_b.py      # IOGP multi-class training
+│   ├── precompute_scores.py  # Cache dashboard Aggregate page scores
 │   └── predict.py            # Unified inference function
 ├── models/                   # Trained .joblib/.pkl files
 ├── dashboard/

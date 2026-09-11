@@ -35,9 +35,9 @@ from config import PROCESSED_CSV_PATH, EMBEDDINGS_PATH, MODELS_DIR, RANDOM_STATE
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-REPORTS_DIR = PROJECT_ROOT / "reports"
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
+REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
+os.makedirs(REPORTS_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
 
 def main():
     print("=" * 65)
@@ -160,7 +160,7 @@ def main():
     plt.xticks(rotation=45, ha='right')
     plt.yticks(rotation=0)
     
-    cm_path = REPORTS_DIR / "model_b_confusion_matrix.png"
+    cm_path = os.path.join(REPORTS_DIR, "model_b_confusion_matrix.png")
     plt.tight_layout()
     plt.savefig(cm_path)
     print(f"Saved representative confusion matrix to: {cm_path}")
@@ -179,8 +179,8 @@ def main():
         
     final_model.fit(X, y)
     
-    model_path = MODELS_DIR / "model_b_iogp_classifier.joblib"
-    classes_path = MODELS_DIR / "model_b_classes.pkl"
+    model_path = os.path.join(MODELS_DIR, "model_b_iogp_classifier.joblib")
+    classes_path = os.path.join(MODELS_DIR, "model_b_classes.pkl")
     
     joblib.dump(final_model, model_path)
     with open(classes_path, 'wb') as f:

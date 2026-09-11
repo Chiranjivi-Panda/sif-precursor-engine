@@ -28,39 +28,45 @@ from src.config import (
 # ---------------------------------------------------------
 _cache = {}
 
-def _load_artifacts():
+def load_artifacts():
     """Load all models, embedders, and reference data once."""
-    if _cache:
-        return
-    
     print("[predict] Loading models and artifacts...")
+    artifacts = {}
     
     # Model A (SIF Classification)
-    model_a_path = MODELS_DIR / "model_a_sif_classifier.joblib"
-    prep_a_path = MODELS_DIR / "model_a_preprocessor.joblib"
-    _cache['model_a'] = joblib.load(model_a_path)
-    _cache['prep_a'] = joblib.load(prep_a_path)
+    model_a_path = os.path.join(MODELS_DIR, "model_a_sif_classifier.joblib")
+    prep_a_path = os.path.join(MODELS_DIR, "model_a_preprocessor.joblib")
+    artifacts['model_a'] = joblib.load(model_a_path)
+    artifacts['prep_a'] = joblib.load(prep_a_path)
     
     # Model B (IOGP Rule Classification)
-    model_b_path = MODELS_DIR / "model_b_iogp_classifier.joblib"
-    classes_b_path = MODELS_DIR / "model_b_classes.pkl"
-    _cache['model_b'] = joblib.load(model_b_path)
+    model_b_path = os.path.join(MODELS_DIR, "model_b_iogp_classifier.joblib")
+    classes_b_path = os.path.join(MODELS_DIR, "model_b_classes.pkl")
+    artifacts['model_b'] = joblib.load(model_b_path)
     with open(classes_b_path, 'rb') as f:
-        _cache['classes_b'] = pickle.load(f)
+        artifacts['classes_b'] = pickle.load(f)
         
     # Embedder
-    _cache['tokenizer'] = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    artifacts['tokenizer'] = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
     model = DistilBertModel.from_pretrained('distilbert-base-uncased')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
-    _cache['model'] = model
-    _cache['device'] = device
+    artifacts['model'] = model
+    artifacts['device'] = device
+    
     # Training Data (for nearest neighbor lookup)
-    _cache['train_embeddings'] = np.load(EMBEDDINGS_PATH)
-    _cache['train_df'] = pd.read_csv(PROCESSED_CSV_PATH)
+    artifacts['train_embeddings'] = np.load(EMBEDDINGS_PATH)
+    artifacts['train_df'] = pd.read_csv(PROCESSED_CSV_PATH)
     
     print("[predict] All artifacts loaded successfully.")
+    return artifacts
+
+def set_artifacts(artifacts):
+    """Set the global cache to the provided artifacts."""
+    global _cache
+    _cache.clear()
+    _cache.update(artifacts)
 
 # ---------------------------------------------------------
 # Core Inference Function
@@ -72,8 +78,10 @@ def predict_report(text: str, industry_sector: str = None, employee_type: str = 
     
     Also returns the top 3 most similar historical reports.
     """
-    _load_artifacts()
-    
+    if not _cache:
+        # Fallback if set_artifacts wasn't called (e.g. legacy scripts)
+        set_artifacts(load_artifacts())
+        
     start_time = time.time()
     
     # 1. Embedding

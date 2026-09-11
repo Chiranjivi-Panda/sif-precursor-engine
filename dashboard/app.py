@@ -4,10 +4,11 @@ SIF Precursor Detection Engine Dashboard
 Streamlit web application for interactive inference and analysis.
 """
 
-import os
 import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import time
-from pathlib import Path
 
 import streamlit as st
 import pandas as pd
@@ -15,43 +16,52 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Ensure we can import from src
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
-
-from src.predict import predict_report
+from src.predict import predict_report, load_artifacts, set_artifacts
 from src.config import PROCESSED_CSV_PATH
+import traceback
 
 # -------------------------------------------------------------------
 # Helper / Caching Functions
 # -------------------------------------------------------------------
 
+@st.cache_resource
+def init_app():
+    return load_artifacts()
+
+def render_footer():
+    st.markdown("---")
+    st.caption("SIF-SENTINEL — Team BitManiacs, RGIPT | SIH 2026 (SIH26165)<br>"
+               "Prototype trained on a public industrial-safety proxy dataset. Not production-calibrated for oil & gas operations.<br>"
+               "[GitHub Repository](https://github.com/Chiranjivi-Panda/sif-precursor-engine)", unsafe_allow_html=True)
+
 @st.cache_data
 def load_data():
-    if PROCESSED_CSV_PATH.exists():
+    if os.path.exists(PROCESSED_CSV_PATH):
         return pd.read_csv(PROCESSED_CSV_PATH)
     return pd.DataFrame()
 
+SCORED_REPORTS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', 'scored_reports.csv')
+
 @st.cache_data
 def load_and_score_top_10():
-    """Scores all training reports and returns the top 10 highest-risk."""
-    df = load_data()
+    """Reads precomputed scored_reports.csv and returns the top 10 highest-risk."""
+    if not os.path.exists(SCORED_REPORTS_PATH):
+        return pd.DataFrame()
+        
+    df = pd.read_csv(SCORED_REPORTS_PATH)
     if df.empty:
         return pd.DataFrame()
         
     scored = []
-    # Using a progress bar here might not work well with caching, so just do it silently
     for idx, row in df.iterrows():
-        # Avoid crashing on nan descriptions
         desc = str(row.get('Description', ''))
-        if not desc or desc == 'nan':
-            continue
-            
-        res = predict_report(desc)
+        sif_prob = row.get('sif_probability', 0.0)
+        iogp_rule = row.get('pred_iogp_rule', '')
+        
         scored.append({
             'Report text': desc[:100] + ('...' if len(desc) > 100 else ''),
-            'SIF probability (%)': round(res['sif_probability'] * 100, 2),
-            'Predicted IOGP rule': res['iogp_rule'] if res['iogp_rule'] else "N/A",
+            'SIF probability (%)': round(sif_prob * 100, 2),
+            'Predicted IOGP rule': iogp_rule if pd.notna(iogp_rule) and iogp_rule else "N/A",
             'Site (Local)': row.get('Local', 'Unknown')
         })
         
@@ -92,43 +102,53 @@ def page_live_predictor():
             s = sector_choice if sector_choice != "None" else None
             e = emp_choice if emp_choice != "None" else None
             
-            res = predict_report(text_input, industry_sector=s, employee_type=e)
-            
-            st.markdown("### Prediction Results")
-            
-            # A) SIF Flag Badge
-            if res['is_sif']:
-                st.error("⚠️ **SIF POTENTIAL DETECTED**")
-            else:
-                st.success("✓ **Non-SIF Report**")
+            if len(text_input) > 5000:
+                st.info("Input text exceeded 5000 characters and was truncated.")
+                text_input = text_input[:5000]
                 
-            st.write(f"**SIF probability:** {res['sif_probability'] * 100:.1f}%")
-            
-            # B) IOGP Rule Tag
-            st.markdown("#### IOGP Life-Saving Rule")
-            if res['is_sif'] and res['iogp_rule']:
-                st.warning(f"🏷️ **{res['iogp_rule']}** (Confidence: {res['iogp_confidence'] * 100:.1f}%)")
-            else:
-                st.markdown("<span style='color:gray'>No IOGP tagging (non-SIF report)</span>", unsafe_allow_html=True)
+            try:
+                res = predict_report(text_input, industry_sector=s, employee_type=e)
                 
-            # C) Similar Past Reports
-            st.markdown("---")
-            with st.expander("3 Most Similar Historical Reports", expanded=True):
-                for i, nn in enumerate(res['nearest_neighbors']):
-                    st.markdown(f"**Neighbor {i+1}**")
-                    short_text = nn['text'][:150] + ("..." if len(nn['text']) > 150 else "")
-                    st.write(f"_{short_text}_")
+                st.markdown("### Prediction Results")
+                
+                # A) SIF Flag Badge
+                if res['is_sif']:
+                    st.error("⚠️ **SIF POTENTIAL DETECTED**")
+                else:
+                    st.success("✓ **Non-SIF Report**")
                     
-                    # Badge for actual label
-                    sif_color = "red" if nn['is_sif'] == 1 else "green"
-                    sif_text = "SIF" if nn['is_sif'] == 1 else "Non-SIF"
+                st.write(f"**SIF probability:** {res['sif_probability'] * 100:.1f}%")
+                
+                # B) IOGP Rule Tag
+                st.markdown("#### IOGP Life-Saving Rule")
+                if res['is_sif'] and res['iogp_rule']:
+                    st.warning(f"🏷️ **{res['iogp_rule']}** (Confidence: {res['iogp_confidence'] * 100:.1f}%)")
+                else:
+                    st.markdown("<span style='color:gray'>No IOGP tagging (non-SIF report)</span>", unsafe_allow_html=True)
                     
-                    st.markdown(
-                        f"<span style='background-color:{sif_color};color:white;padding:2px 6px;border-radius:4px;font-size:12px;'>{sif_text}</span> "
-                        f"**Actual IOGP:** {nn['iogp_rule']}", 
-                        unsafe_allow_html=True
-                    )
-                    st.markdown("<br>", unsafe_allow_html=True)
+                # C) Similar Past Reports
+                st.markdown("---")
+                with st.expander("3 Most Similar Historical Reports", expanded=True):
+                    for i, nn in enumerate(res['nearest_neighbors']):
+                        st.markdown(f"**Neighbor {i+1}**")
+                        short_text = nn['text'][:150] + ("..." if len(nn['text']) > 150 else "")
+                        st.write(f"_{short_text}_")
+                        
+                        # Badge for actual label
+                        sif_color = "red" if nn['is_sif'] == 1 else "green"
+                        sif_text = "SIF" if nn['is_sif'] == 1 else "Non-SIF"
+                        
+                        st.markdown(
+                            f"<span style='background-color:{sif_color};color:white;padding:2px 6px;border-radius:4px;font-size:12px;'>{sif_text}</span> "
+                            f"**Actual IOGP:** {nn['iogp_rule']}", 
+                            unsafe_allow_html=True
+                        )
+                        st.markdown("<br>", unsafe_allow_html=True)
+            except Exception as ex:
+                st.error("Could not process this report. Please check the input text and try again.")
+                traceback.print_exc()
+
+    render_footer()
 
 
 # -------------------------------------------------------------------
@@ -226,7 +246,13 @@ def page_aggregate_dashboard():
     
     with st.spinner("Scoring reports..."):
         top_10_df = load_and_score_top_10()
-        st.dataframe(top_10_df, use_container_width=True, hide_index=True)
+        if top_10_df.empty:
+            st.warning("Precomputed scores not found. Please run `python src/precompute_scores.py`.")
+        else:
+            st.dataframe(top_10_df, use_container_width=True, hide_index=True)
+            st.caption("Note: These scores are in-sample predictions from the production model, which was trained on all 425 reports. They illustrate the ranking interface, not model performance. All reported metrics (Model A F2, Model B macro-F1) come from held-out cross-validation folds — see the Limitations page.")
+    
+    render_footer()
 
 
 # -------------------------------------------------------------------
@@ -256,6 +282,10 @@ def page_batch_upload():
         st.success(f"CSV loaded successfully with {len(df)} rows.")
         
         if st.button("Score All Rows"):
+            if len(df) > 200:
+                st.warning("Free-tier resource limit: only the first 200 rows were scored. The full pipeline has no such limit when deployed on OIL infrastructure.")
+                df = df.head(200)
+
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -276,13 +306,18 @@ def page_batch_upload():
                 ind = row.get('Industry Sector', None)
                 emp = row.get('Employee or Third Party', None)
                 
-                res = predict_report(text, industry_sector=ind, employee_type=emp)
-                results.append({
-                    'is_sif': res['is_sif'],
-                    'sif_probability': res['sif_probability'],
-                    'iogp_rule': res['iogp_rule'],
-                    'iogp_confidence': res['iogp_confidence']
-                })
+                try:
+                    res = predict_report(text, industry_sector=ind, employee_type=emp)
+                    results.append({
+                        'is_sif': res['is_sif'],
+                        'sif_probability': res['sif_probability'],
+                        'iogp_rule': res['iogp_rule'],
+                        'iogp_confidence': res['iogp_confidence']
+                    })
+                except Exception as ex:
+                    traceback.print_exc()
+                    st.error(f"Could not process row {i+1}. Please check the input text and try again.")
+                    results.append({'is_sif': False, 'sif_probability': 0.0, 'iogp_rule': None, 'iogp_confidence': None})
                 
             progress_bar.progress(100)
             status_text.text("Scoring complete!")
@@ -313,6 +348,8 @@ def page_batch_upload():
                 mime="text/csv"
             )
 
+    render_footer()
+
 
 # -------------------------------------------------------------------
 # Page 4: Limitations & Model Card
@@ -334,6 +371,7 @@ def page_limitations():
     
     st.markdown("### Validation Approach")
     st.markdown("All metrics use stratified k-fold cross-validation (5-fold for Model A, 3-fold for Model B) and report mean ± std, not single train/test splits, given the small dataset size.")
+    st.markdown("- **Dashboard Scores:** The 'Top 10 High-Risk Reports' shown on the Aggregate Dashboard are in-sample predictions for UI demonstration purposes. They do not represent held-out model performance.")
     
     st.markdown("### Classification Threshold")
     st.markdown("SIF threshold is fixed at 50% for this prototype. Adaptive threshold tuning is a planned enhancement, done carefully to avoid overfitting.")
@@ -342,10 +380,15 @@ def page_limitations():
     st.markdown("Gender ('Genre' column) was deliberately excluded from both models as a predictive feature, as it has no causal relationship to incident severity and would raise fairness concerns.")
     
     st.info("For questions or technical details, see the full project documentation in `/reports/`.")
+    render_footer()
 
 
 def main():
     st.set_page_config(page_title="SIF Precursor Detection Engine", layout="wide")
+    
+    with st.spinner("Loading AI models — this takes ~30 seconds on first load..."):
+        artifacts = init_app()
+        set_artifacts(artifacts)
     
     page = st.sidebar.radio("Navigation", 
         ["Live Predictor", "Aggregate Dashboard", "Batch Upload", "Limitations"])

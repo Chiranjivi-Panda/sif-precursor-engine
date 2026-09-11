@@ -101,7 +101,7 @@ def load_and_prepare_data(raw_csv_path: str | Path) -> pd.DataFrame:
     _print_summary(df)
 
     # -- 9-10. Save and return -----------------------------------------
-    PROCESSED_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(os.path.dirname(PROCESSED_CSV_PATH), exist_ok=True)
     df.to_csv(PROCESSED_CSV_PATH, index=False)
     print(f"\n[data_prep] Saved labelled data to: {PROCESSED_CSV_PATH}")
 

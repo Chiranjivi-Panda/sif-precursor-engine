@@ -49,11 +49,24 @@ def main() -> None:
     print("  Row-order alignment sanity check (first 3 rows)")
     print("-" * 65)
 
-    from sentence_transformers import SentenceTransformer
+    import torch
+    from transformers import DistilBertTokenizer, DistilBertModel
 
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    model = DistilBertModel.from_pretrained('distilbert-base-uncased')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+    model.eval()
+    
     first_3 = df["Description"].head(3).tolist()
-    fresh_embeddings = model.encode(first_3, show_progress_bar=False)
+    fresh_embeddings = []
+    with torch.no_grad():
+        for text in first_3:
+            inputs = tokenizer(str(text), return_tensors='pt', truncation=True, max_length=512).to(device)
+            outputs = model(**inputs)
+            cls_embedding = outputs.last_hidden_state[:, 0, :].cpu().numpy()[0]
+            fresh_embeddings.append(cls_embedding)
+            
     fresh_embeddings = np.array(fresh_embeddings)
 
     all_ok = True

@@ -1,7 +1,7 @@
 """
 Embedding pipeline for the SIF Precursor Engine.
 
-Encodes the 'Description' column using a SentenceTransformer model
+Encodes the 'Description' column using a DistilBERT model
 and caches the result to disk as a .npy file.
 """
 
@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import os
 
 from config import EMBEDDING_MODEL_NAME, EMBEDDINGS_PATH
 
@@ -20,7 +21,7 @@ def embed_descriptions(
     cache_path: str | Path = EMBEDDINGS_PATH,
     force_recompute: bool = False,
 ) -> np.ndarray:
-    """Embed the 'Description' column with SentenceTransformer.
+    """Embed the 'Description' column with DistilBERT.
 
     Parameters
     ----------
@@ -40,7 +41,7 @@ def embed_descriptions(
     n_rows = len(df)
 
     # -- 1. Try loading from cache ------------------------------------
-    if cache_path.exists() and not force_recompute:
+    if os.path.exists(cache_path) and not force_recompute:
         print(f"[embed] Loading cached embeddings from: {cache_path}")
         embeddings = np.load(cache_path)
 
@@ -86,7 +87,7 @@ def embed_descriptions(
     embeddings = np.array(embeddings)
 
     # -- 3. Save to cache ---------------------------------------------
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     np.save(cache_path, embeddings)
     print(f"[embed] Saved embeddings to: {cache_path}")
 

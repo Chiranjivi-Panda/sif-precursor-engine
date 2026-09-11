@@ -4,7 +4,10 @@ Runs 3 diverse examples through the pipeline.
 """
 
 import json
-from src.predict import predict_report
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.predict import predict_report, load_artifacts, set_artifacts
 
 def main():
     examples = [
@@ -31,6 +34,8 @@ def main():
     print("=" * 60)
     print("  Testing predict_report() Pipeline")
     print("=" * 60)
+    
+    set_artifacts(load_artifacts())
     
     for ex in examples:
         print(f"\n[{ex['id']}]")

@@ -10,14 +10,14 @@ Usage:
     python src/verify_raw_files.py
 """
 
-from pathlib import Path
+import os
 
 import pandas as pd
 
 from config import PROJECT_ROOT
 
 
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
+RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
 
 FILES = {
     "safety_data_main.csv": {
@@ -43,12 +43,12 @@ def main() -> None:
     all_ok = True
 
     for filename, info in FILES.items():
-        path = RAW_DIR / filename
+        path = os.path.join(RAW_DIR, filename)
         print(f"\n  [FILE] {filename}")
         print(f"     Role : {info['role']}")
         print(f"     Path : {path}")
 
-        if not path.exists():
+        if not os.path.exists(path):
             print("     [MISSING] NOT FOUND -- please place this file in data/raw/")
             all_ok = False
             continue

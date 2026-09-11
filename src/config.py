@@ -99,9 +99,10 @@ EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
 #      ↳ Blank OSHA-301 form template — zero data rows.
 #      ↳ NEVER load into a dataframe. Visual reference for dashboard only.
 # ──────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+import os
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-RAW_CSV_PATH       = PROJECT_ROOT / "data" / "raw" / "safety_data_main.csv"
-PROCESSED_CSV_PATH = PROJECT_ROOT / "data" / "processed" / "labeled_data.csv"
-EMBEDDINGS_PATH    = PROJECT_ROOT / "data" / "processed" / "embeddings.npy"
-MODELS_DIR         = PROJECT_ROOT / "models"
+RAW_CSV_PATH       = os.path.join(PROJECT_ROOT, "data", "raw", "safety_data_main.csv")
+PROCESSED_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "labeled_data.csv")
+EMBEDDINGS_PATH    = os.path.join(PROJECT_ROOT, "data", "processed", "embeddings.npy")
+MODELS_DIR         = os.path.join(PROJECT_ROOT, "models")

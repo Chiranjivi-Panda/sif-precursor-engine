@@ -38,9 +38,10 @@ from config import PROCESSED_CSV_PATH, EMBEDDINGS_PATH, MODELS_DIR, RANDOM_STATE
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Ensure output directories exist
-REPORTS_DIR = PROJECT_ROOT / "reports"
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
+import os
+REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
+os.makedirs(REPORTS_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
 
 def main():
     print("=" * 65)
@@ -172,7 +173,7 @@ def main():
     plt.title("Confusion Matrix - MiniLM + XGBoost (Fold 0)")
     plt.xlabel("Predicted")
     plt.ylabel("Actual")
-    cm_path = REPORTS_DIR / "model_a_confusion_matrix.png"
+    cm_path = os.path.join(REPORTS_DIR, "model_a_confusion_matrix.png")
     plt.tight_layout()
     plt.savefig(cm_path)
     print(f"\nSaved representative confusion matrix to: {cm_path}")
@@ -214,8 +215,8 @@ def main():
     final_model.fit(X_embed, y)
     
     # Save artifacts
-    model_path = MODELS_DIR / "model_a_sif_classifier.joblib"
-    preprocessor_path = MODELS_DIR / "model_a_preprocessor.joblib"
+    model_path = os.path.join(MODELS_DIR, "model_a_sif_classifier.joblib")
+    preprocessor_path = os.path.join(MODELS_DIR, "model_a_preprocessor.joblib")
     
     joblib.dump(final_model, model_path)
     joblib.dump({'ohe': ohe, 'expected_features': expected_features, 'cat_cols': ['Industry Sector', 'Employee or Third Party']}, preprocessor_path)
