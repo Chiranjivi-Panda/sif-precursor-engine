@@ -1,9 +1,16 @@
 """
 Unified Inference Module for SIF Precursor Engine
 
-Provides the `predict_report` function which combines Model A (SIF prediction)
-and Model B (IOGP rule multi-class prediction) for dashboard use.
-Models and artifacts are loaded once and cached at the module level.
+Model A : SIF binary classification  -- 768-dim DistilBERT embeddings ONLY
+Model B : IOGP Life-Saving Rule tag  -- 768-dim DistilBERT embeddings ONLY
+
+DESIGN NOTE (important, see reports/limitations.md)
+---------------------------------------------------
+Industry Sector and Employee Type are accepted by predict_report() for UI
+compatibility but are NOT used as model features. During development we found
+that concatenating these one-hot features let XGBoost learn a dataset-origin
+shortcut: the same hazard text scored 99% SIF with one sector selected and 31%
+with another. Hazard severity must be driven by the narrative, not by metadata.
 """
 
 import os
@@ -17,183 +24,213 @@ import torch
 from transformers import DistilBertTokenizer, DistilBertModel
 
 from src.config import (
-    PROCESSED_CSV_PATH, 
-    EMBEDDINGS_PATH, 
-    MODELS_DIR, 
-    EMBEDDING_MODEL_NAME
+    PROCESSED_CSV_PATH,
+    EMBEDDINGS_PATH,
+    MODELS_DIR,
+    EMBEDDING_MODEL_NAME,
+    IOGP_MIN_CONFIDENCE,
 )
 
-# ---------------------------------------------------------
-# Module-level Cache for Models and Artifacts
-# ---------------------------------------------------------
+SYNTH_SOURCE = "SYNTHETIC_NEG"
+DEFAULT_THRESHOLD = 0.5
+VERBOSE = False          # set True to print per-stage timings
+
 _cache = {}
 
+
+# ---------------------------------------------------------
+# Artifact loading
+# ---------------------------------------------------------
 def load_artifacts():
-    """Load all models, embedders, and reference data once."""
+    """Load models, embedder, and reference corpus once."""
     print("[predict] Loading models and artifacts...")
     artifacts = {}
-    
+
     def safe_load(path):
         try:
             return joblib.load(path)
         except Exception as e:
             import importlib.metadata
+
             def get_ver(pkg):
-                try: return importlib.metadata.version(pkg)
-                except: return "Not installed"
-            
-            np_v = get_ver('numpy')
-            sp_v = get_ver('scipy')
-            sk_v = get_ver('scikit-learn')
-            xgb_v = get_ver('xgboost')
-            
-            msg = f"Failed to load artifact: {os.path.basename(path)}\n"
-            msg += f"Exception: {str(e)}\n"
-            msg += f"Installed versions: numpy={np_v}, scipy={sp_v}, scikit-learn={sk_v}, xgboost={xgb_v}\n"
-            msg += "This usually means the pickled artifacts were created with different library versions than are installed. Either align requirements.txt to the environment that produced the artifacts, or regenerate the artifacts in this environment."
+                try:
+                    return importlib.metadata.version(pkg)
+                except Exception:
+                    return "Not installed"
+
+            msg = (
+                f"Failed to load artifact: {os.path.basename(path)}\n"
+                f"Exception: {e}\n"
+                f"Installed versions: numpy={get_ver('numpy')}, "
+                f"scipy={get_ver('scipy')}, "
+                f"scikit-learn={get_ver('scikit-learn')}, "
+                f"xgboost={get_ver('xgboost')}\n"
+                "Pickled artifacts were likely created with different library "
+                "versions. Re-run src/train_model_a.py and src/train_model_b.py "
+                "in this environment to regenerate them."
+            )
             raise RuntimeError(msg) from e
 
-    # Model A (SIF Classification)
-    model_a_path = os.path.join(MODELS_DIR, "model_a_sif_classifier.joblib")
-    prep_a_path = os.path.join(MODELS_DIR, "model_a_preprocessor.joblib")
-    artifacts['model_a'] = safe_load(model_a_path)
-    artifacts['prep_a'] = safe_load(prep_a_path)
-    
-    # Model B (IOGP Rule Classification)
-    model_b_path = os.path.join(MODELS_DIR, "model_b_iogp_classifier.joblib")
-    classes_b_path = os.path.join(MODELS_DIR, "model_b_classes.pkl")
-    artifacts['model_b'] = safe_load(model_b_path)
-    with open(classes_b_path, 'rb') as f:
-        artifacts['classes_b'] = pickle.load(f)
-        
-    # Embedder
-    artifacts['tokenizer'] = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
-    model = DistilBertModel.from_pretrained('distilbert-base-uncased')
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    model.eval()
-    artifacts['model'] = model
-    artifacts['device'] = device
-    
-    # Training Data (for nearest neighbor lookup)
-    artifacts['train_embeddings'] = np.load(EMBEDDINGS_PATH)
-    artifacts['train_df'] = pd.read_csv(PROCESSED_CSV_PATH)
-    
+    # ---- Model A ----
+    artifacts["model_a"] = safe_load(os.path.join(MODELS_DIR, "model_a_sif_classifier.joblib"))
+
+    prep_path = os.path.join(MODELS_DIR, "model_a_preprocessor.joblib")
+    prep_a = safe_load(prep_path) if os.path.exists(prep_path) else {}
+
+    if isinstance(prep_a, dict) and prep_a.get("mode") == "embeddings_only":
+        artifacts["threshold"] = float(prep_a.get("threshold", DEFAULT_THRESHOLD))
+        artifacts["expected_dim"] = int(prep_a.get("embedding_dim", 768))
+    else:
+        # Legacy artifact detected -- refuse to silently misbehave
+        raise RuntimeError(
+            "model_a_preprocessor.joblib is in the OLD format (with one-hot "
+            "encoders). Model A has been retrained on embeddings only.\n"
+            "Fix: run  python src/train_model_a.py  to regenerate artifacts."
+        )
+
+    # ---- Model B ----
+    artifacts["model_b"] = safe_load(os.path.join(MODELS_DIR, "model_b_iogp_classifier.joblib"))
+    with open(os.path.join(MODELS_DIR, "model_b_classes.pkl"), "rb") as f:
+        artifacts["classes_b"] = pickle.load(f)
+
+    # ---- Embedder ----
+    artifacts["tokenizer"] = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+    bert = DistilBertModel.from_pretrained("distilbert-base-uncased")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    artifacts["model"] = bert.to(device).eval()
+    artifacts["device"] = device
+
+    # ---- Reference corpus for nearest-neighbour explanations ----
+    train_emb = np.load(EMBEDDINGS_PATH)
+    train_df = pd.read_csv(PROCESSED_CSV_PATH)
+
+    # Synthetic rows are training aids, not real incidents. Never show them
+    # to a user as a "similar historical report".
+    if "source" in train_df.columns:
+        real_mask = (train_df["source"] != SYNTH_SOURCE).to_numpy()
+    else:
+        real_mask = np.ones(len(train_df), dtype=bool)
+
+    artifacts["nn_embeddings"] = train_emb[real_mask]
+    artifacts["nn_df"] = train_df[real_mask].reset_index(drop=True)
+
+    # Backward-compatible aliases for precompute_scores.py and legacy scripts.
+    # These point at the REAL-ONLY rows on purpose: the dashboard must never
+    # display synthetic training rows as if they were genuine incidents.
+    artifacts["train_embeddings"] = artifacts["nn_embeddings"]
+    artifacts["train_df"] = artifacts["nn_df"]
+
+    n_hidden = int((~real_mask).sum())
+    print(f"[predict] Threshold = {artifacts['threshold']:.2f} "
+          f"| neighbour pool = {len(artifacts['nn_df']):,} real rows "
+          f"({n_hidden:,} synthetic excluded)")
     print("[predict] All artifacts loaded successfully.")
     return artifacts
 
+
 def set_artifacts(artifacts):
-    """Set the global cache to the provided artifacts."""
     global _cache
     _cache.clear()
     _cache.update(artifacts)
 
+
 # ---------------------------------------------------------
-# Core Inference Function
+# Embedding helper
 # ---------------------------------------------------------
-def predict_report(text: str, industry_sector: str = None, employee_type: str = None) -> dict:
+def _embed(text: str) -> np.ndarray:
+    tokenizer = _cache["tokenizer"]
+    bert = _cache["model"]
+    device = _cache["device"]
+    with torch.no_grad():
+        inputs = tokenizer(str(text), return_tensors="pt",
+                           truncation=True, max_length=512).to(device)
+        out = bert(**inputs)
+        return out.last_hidden_state[:, 0, :].cpu().numpy()   # (1, 768) CLS
+
+
+# ---------------------------------------------------------
+# Core inference
+# ---------------------------------------------------------
+def predict_report(text: str,
+                   industry_sector: str = None,
+                   employee_type: str = None) -> dict:
     """
-    Predicts whether a safety report is a SIF precursor (Model A) and, 
-    if so, identifies the IOGP Life-Saving Rule (Model B).
-    
-    Also returns the top 3 most similar historical reports.
+    Classify a free-text safety report.
+
+    industry_sector / employee_type are accepted for UI compatibility but are
+    intentionally NOT used as model features (see module docstring).
     """
     if not _cache:
-        # Fallback if set_artifacts wasn't called (e.g. legacy scripts)
         set_artifacts(load_artifacts())
-        
-    start_time = time.time()
-    
-    # 1. Embedding
-    tokenizer = _cache['tokenizer']
-    model = _cache['model']
-    device = _cache['device']
-    
-    with torch.no_grad():
-        inputs = tokenizer(str(text), return_tensors='pt', truncation=True, max_length=512).to(device)
-        outputs = model(**inputs)
-        # Extract [CLS] token's final hidden state (768-dim)
-        cls_embedding = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-    emb = cls_embedding  # Shape: (1, 768)
-    
-    t_emb = time.time()
-    print(f"Embedding time: {t_emb - start_time:.4f}s")
-    
-    # 2. Feature Engineering for Model A
-    prep_a = _cache['prep_a']
-    ohe = prep_a['ohe']
-    cat_cols = prep_a['cat_cols']
-    
-    # Create 1-row DataFrame for categorical features
-    cat_df = pd.DataFrame([{
-        'Industry Sector': industry_sector if industry_sector else 'Unknown',
-        'Employee or Third Party': employee_type if employee_type else 'Unknown'
-    }])
-    
-    cat_encoded = ohe.transform(cat_df)
-    
-    # Concatenate features
-    X_a = np.hstack([emb, cat_encoded])
-    
-    # Assertion
-    assert X_a.shape[1] == prep_a['expected_features'], (
-        f"Feature mismatch: Expected {prep_a['expected_features']}, got {X_a.shape[1]}"
+
+    t0 = time.time()
+
+    # 1) Embed
+    emb = _embed(text)
+    t1 = time.time()
+
+    # 2) Model A -- embeddings only, tuned threshold
+    model_a = _cache["model_a"]
+    threshold = _cache["threshold"]
+
+    assert emb.shape[1] == _cache["expected_dim"], (
+        f"Embedding dim mismatch: model expects {_cache['expected_dim']}, "
+        f"got {emb.shape[1]}"
     )
+
+    sif_probability = float(model_a.predict_proba(emb)[0][1])
+    is_sif = bool(sif_probability >= threshold)
+    t2 = time.time()
+
+    # 3) Model B -- only when flagged SIF
     
-    # 3. Model A Prediction (SIF)
-    model_a = _cache['model_a']
-    # Threshold fixed at 0.5 as per training
-    sif_probability = model_a.predict_proba(X_a)[0][1]
-    is_sif = sif_probability >= 0.5
-    
-    t_ma = time.time()
-    print(f"Model A time: {t_ma - t_emb:.4f}s")
-    
-    # 4. Model B Prediction (IOGP Rule)
-    # We only tag IOGP rules for SIF-flagged reports; presenting a confident 
-    # IOGP prediction for a non-SIF report would be misleading.
     iogp_rule = None
     iogp_confidence = None
-    
+    iogp_uncertain = False
+
     if is_sif:
-        model_b = _cache['model_b']
-        classes_b = _cache['classes_b']
-        
-        probs = model_b.predict_proba(emb)[0]
-        pred_idx = np.argmax(probs)
-        
-        iogp_rule = classes_b[pred_idx]
-        iogp_confidence = probs[pred_idx]
-        
-    t_mb = time.time()
-    print(f"Model B time: {t_mb - t_ma:.4f}s")
-        
-    # 5. Nearest Neighbors Lookup
-    train_embeddings = _cache['train_embeddings']
-    train_df = _cache['train_df']
-    
-    similarities = cosine_similarity(emb, train_embeddings)[0]
-    # Get top 3 indices (argsort sorts ascending, so take last 3 and reverse)
-    top3_indices = np.argsort(similarities)[-3:][::-1]
-    
+        probs = _cache["model_b"].predict_proba(emb)[0]
+        idx = int(np.argmax(probs))
+        conf = float(probs[idx])
+
+        # Softmax always sums to 1, so a "confident" score can still come from
+        # a class the model never learned. Suppress tags below the floor
+        # rather than present a wrong rule authoritatively.
+        if conf >= IOGP_MIN_CONFIDENCE:
+            iogp_rule = str(_cache["classes_b"][idx])
+            iogp_confidence = conf
+        else:
+            iogp_rule = "Uncertain -- manual review required"
+            iogp_confidence = conf
+            iogp_uncertain = True
+    t3 = time.time()
+    # 4) Nearest real historical reports
+    sims = cosine_similarity(emb, _cache["nn_embeddings"])[0]
+    top3 = np.argsort(sims)[-3:][::-1]
+    nn_df = _cache["nn_df"]
+
     nearest_neighbors = []
-    for idx in top3_indices:
-        row = train_df.iloc[idx]
+    for i in top3:
+        row = nn_df.iloc[int(i)]
         nearest_neighbors.append({
-            'text': row['Description'],
-            'is_sif': int(row['is_sif']),
-            'iogp_rule': str(row['iogp_rule'])
+            "text": str(row["Description"]),
+            "is_sif": int(row["is_sif"]),
+            "iogp_rule": str(row.get("iogp_rule", "Uncategorized")),
+            "similarity": float(sims[int(i)]),
+            "source": str(row.get("source", "unknown")),
         })
-        
-    t_nn = time.time()
-    print(f"Nearest neighbors time: {t_nn - t_mb:.4f}s")
-    print(f"Total prediction time: {time.time() - start_time:.4f}s")
-        
-    # 6. Return Formatting
+
+    if VERBOSE:
+        print(f"[predict] embed={t1-t0:.3f}s  modelA={t2-t1:.3f}s  "
+              f"modelB={t3-t2:.3f}s  nn={time.time()-t3:.3f}s  "
+              f"total={time.time()-t0:.3f}s")
+
     return {
-        'is_sif': bool(is_sif),
-        'sif_probability': float(sif_probability),
-        'iogp_rule': str(iogp_rule) if iogp_rule else None,
-        'iogp_confidence': float(iogp_confidence) if iogp_confidence else None,
-        'nearest_neighbors': nearest_neighbors
+        "is_sif": is_sif,
+        "sif_probability": sif_probability,
+        "threshold": threshold,
+        "iogp_rule": iogp_rule,
+        "iogp_confidence": iogp_confidence,
+        "nearest_neighbors": nearest_neighbors,        
+        "iogp_uncertain": iogp_uncertain,
     }

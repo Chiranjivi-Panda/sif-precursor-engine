@@ -5,12 +5,14 @@ Loads the raw Kaggle/IHMStefanini industrial-safety CSV, cleans it,
 applies the IOGP mapping, creates the binary SIF label, and saves the
 result to data/processed/labeled_data.csv.
 
-NOTE -- Genre, Accident Level, and Critical Risk are **label sources only**.
-       They must NOT be used as model features anywhere downstream.
+NOTE -- Genre, Accident Level, Potential Accident Level, and Critical Risk
+        are **label sources only**. They must NOT be used as model features
+        anywhere downstream.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -97,10 +99,19 @@ def load_and_prepare_data(raw_csv_path: str | Path) -> pd.DataFrame:
         lambda x: IOGP_MAP.get(x, "Uncategorized")
     )
 
-    # -- 8. Summary ----------------------------------------------------
+    # -- 8. Provenance tag ---------------------------------------------
+    # Every row in this file comes from the IHM Stefanini dataset. The column
+    # exists so downstream code (predict.py nearest-neighbour display,
+    # precompute_scores.py) can always report where a report originated.
+    # It also keeps the schema stable if additional sources are ever
+    # re-introduced after passing the src/diagnose_signal.py checks.
+    df["source"] = "IHM_Stefanini"
+    print("[data_prep] Tagged all rows with source = 'IHM_Stefanini'.")
+
+    # -- 9. Summary ----------------------------------------------------
     _print_summary(df)
 
-    # -- 9-10. Save and return -----------------------------------------
+    # -- 10-11. Save and return ----------------------------------------
     os.makedirs(os.path.dirname(PROCESSED_CSV_PATH), exist_ok=True)
     df.to_csv(PROCESSED_CSV_PATH, index=False)
     print(f"\n[data_prep] Saved labelled data to: {PROCESSED_CSV_PATH}")
@@ -125,7 +136,7 @@ def _print_summary(df: pd.DataFrame) -> None:
 
     # -- iogp_rule distribution ----------------------------------------
     rule_counts = df["iogp_rule"].value_counts()
-    print("\n  iogp_rule distribution:")
+    print("\n  iogp_rule distribution (before Model B merge):")
     for rule, cnt in rule_counts.items():
         pct = cnt / n * 100
         flag = "  << LOW COUNT" if (rule != "Uncategorized" and cnt < 10) else ""
@@ -139,7 +150,8 @@ def _print_summary(df: pd.DataFrame) -> None:
     }
     if low_cats:
         print("\n  [WARN] The following IOGP categories have < 10 rows,")
-        print("         which is too few to train/test reliably:")
+        print("         which is too few to train/test reliably.")
+        print("         train_model_b.py merges these -- see IOGP_MERGE in config.py:")
         for rule, cnt in low_cats.items():
             print(f"           * {rule}: {cnt}")
 

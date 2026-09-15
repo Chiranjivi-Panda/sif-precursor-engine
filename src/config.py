@@ -71,6 +71,26 @@ IOGP_MAP: dict[str, str] = {
     "Not applicable":                               "Uncategorized",
     "Others":                                       "Uncategorized",
 }
+# ──────────────────────────────────────────────────────────────────────
+# Model B class consolidation
+#
+# The 6-class taxonomy leaves 'Safe Mechanical Lifting' (n=8) and
+# 'Driving/Line of Fire' (n=9) with too few examples to learn -- the former
+# scored F1=0.00 in CV while still being predicted at 0.74 confidence.
+#
+# We merge them into their nearest hazard family. Both involve uncontrolled
+# movement of a mass toward a person, which is the Line of Fire concept.
+# This is a documented prototype simplification; with OIL's production data
+# the full 9-rule IOGP taxonomy becomes viable.
+# ──────────────────────────────────────────────────────────────────────
+IOGP_MERGE: dict[str, str] = {
+    "Safe Mechanical Lifting": "Line of Fire",
+    "Driving/Line of Fire":    "Line of Fire",
+}
+
+# Minimum confidence before a rule tag is shown to a user.
+# Below this the UI must display "Uncertain -- manual review required".
+IOGP_MIN_CONFIDENCE: float = 0.45
 
 # ──────────────────────────────────────────────────────────────────────
 # SIF severity threshold
@@ -79,11 +99,36 @@ IOGP_MAP: dict[str, str] = {
 # or Fatality).  Everything else is non-SIF.
 # ──────────────────────────────────────────────────────────────────────
 SIF_LEVELS: list[str] = ["IV", "V", "VI"]
+# ──────────────────────────────────────────────────────────────────────
+# Model B class consolidation
+#
+# The 6-class taxonomy leaves 'Safe Mechanical Lifting' (n=8) and
+# 'Driving/Line of Fire' (n=9) with too few examples to learn. In 3-fold CV
+# 'Safe Mechanical Lifting' scored F1 = 0.00 while still being predicted at
+# 0.74 confidence on live input -- a confidently wrong tag, which is the worst
+# failure mode for a triage tool.
+#
+# Both merged classes involve uncontrolled movement of a mass toward a person,
+# which is the Line of Fire concept. This is a documented prototype
+# simplification; OIL's production data will support the full 9-rule taxonomy.
+# ──────────────────────────────────────────────────────────────────────
+IOGP_MERGE: dict[str, str] = {
+    "Safe Mechanical Lifting": "Line of Fire",
+    "Driving/Line of Fire":    "Line of Fire",
+}
+
+# Minimum softmax confidence before a rule tag is shown to a user.
+# Softmax always sums to 1.0, so a "confident" score can still come from a
+# class the model never learned. Below this floor the UI shows
+# "Uncertain -- manual review required" instead of a specific rule.
+IOGP_MIN_CONFIDENCE: float = 0.55
 
 # ──────────────────────────────────────────────────────────────────────
 # Embedding model
 # ──────────────────────────────────────────────────────────────────────
-EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
+# Actual model used in src/embed.py and src/predict.py.
+# 768-dim [CLS] token embedding, matching Parikh et al. (2024).
+EMBEDDING_MODEL_NAME: str = "distilbert-base-uncased"
 
 # ──────────────────────────────────────────────────────────────────────
 # Paths (all relative to the project root)
@@ -103,6 +148,23 @@ import os
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 RAW_CSV_PATH       = os.path.join(PROJECT_ROOT, "data", "raw", "safety_data_main.csv")
+# ──────────────────────────────────────────────────────────────────────
+# Active training corpus
+#
+# Path A (OSHA merge) was built, evaluated, and REJECTED.
+# See reports/data_expansion_results.md for the full write-up.
+#
+#   - 'is this row from OSHA?' was predictable from text at ROC-AUC 0.999,
+#     making source a near-perfect proxy for the label.
+#   - Source-held-out test (train OSHA+synthetic, test IHM): ROC-AUC 0.497,
+#     i.e. random. Flagged 404 of 411 reports.
+#   - Augmentation REDUCED real-data ROC-AUC: 0.650 -> 0.589 (-0.061).
+#
+# Reproduce with: python src/diagnose_signal.py
+#
+# REJECTED:
+# PROCESSED_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "labeled_data_expanded.csv")
+
 PROCESSED_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "labeled_data.csv")
 EMBEDDINGS_PATH    = os.path.join(PROJECT_ROOT, "data", "processed", "embeddings.npy")
 MODELS_DIR         = os.path.join(PROJECT_ROOT, "models")
