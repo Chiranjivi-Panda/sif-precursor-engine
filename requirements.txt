@@ -11,3 +11,4 @@ transformers==5.16.1
 joblib==1.6.0
 matplotlib==3.11.1
 seaborn==0.13.2
+plotly==5.24.1
